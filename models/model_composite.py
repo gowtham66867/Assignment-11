@@ -1,6 +1,7 @@
 # Library imports
 import torch
 import torch.nn as nn
+from torchinfo import summary
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from utils.utils import fabric
@@ -20,6 +21,14 @@ class Model_Composite(nn.Module):
         self.norm_type = 'bn'
         self.n_groups = 2
 
+    def print_summary(self, input_size: tuple):
+        """ Print model summary
+
+        Args:
+            input_size: Input image size in (N, C, H, W)
+        """
+        summary(self, input_size, verbose=1)
+
     def model_train(self, device, train_loader, criterion, optimizer, scheduler=None) -> None:
         """ Training the model
 
@@ -31,21 +40,19 @@ class Model_Composite(nn.Module):
         """
         self.train()
         pbar = tqdm(train_loader)
-
         train_loss = 0
         correct = 0
         processed = 0
-
-        for batch_idx, (data, target) in enumerate(pbar):
+        for data, target in pbar:
             data, target = data.to(device), target.to(device) # comment this line if using fabric
             
-            # init
+            # Init
             optimizer.zero_grad()
             
-            # prediction
+            # Prediction
             y_pred = self(data)
             
-            # calculate loss
+            # Calculate loss for a batch of images
             loss = criterion(y_pred, target)
             train_loss += loss.item()
 
@@ -53,14 +60,18 @@ class Model_Composite(nn.Module):
             correct += pred.eq(target.view_as(pred)).sum().item()
             processed += len(data)
 
-            # backpropagation
+            # Backpropagation
             loss.backward()
             # fabric.backward(loss)
             optimizer.step()
             if scheduler is not None:
                 scheduler.step()
 
-            pbar.set_description(desc= f'Train: Loss={loss.item()} Accuracy={100*correct/processed:0.2f}')
+            pbar.set_description(desc='Train: Loss={:0.4f}, LR={}, Accuracy={:0.2f}'.format(
+                loss.item(),
+                optimizer.param_groups[0]["lr"],
+                100*correct/processed
+            ))
         
         self.train_accuracy.append(100*correct/processed)
         self.train_losses.append(train_loss)
@@ -76,23 +87,25 @@ class Model_Composite(nn.Module):
         self.eval()
         test_loss = 0
         correct = 0
+        processed = 0
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
-                output = self(data)
+                y_pred = self(data)
                 try:
-                    test_loss += criterion(output, target, reduction='sum').item()
+                    test_loss += criterion(y_pred, target, reduction='sum').item()
                 except:
-                    test_loss += criterion(output, target).item()
-                pred = output.argmax(dim=1, keepdim=True)
+                    test_loss += criterion(y_pred, target).item()
+                pred = y_pred.argmax(dim=1, keepdim=True)
                 correct += pred.eq(target.view_as(pred)).sum().item()
+                processed += len(data)
 
-        # calculate loss
-        test_loss /= len(test_loader.dataset)
         self.test_losses.append(test_loss)
+        # To compute the average test loss, divide the total loss by number of iterations
+        test_loss /= (len(test_loader.dataset) / test_loader.batch_size)
         
         self.test_accuracy.append(100. * correct / len(test_loader.dataset))
-        print('Test: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%), Accuracy Diff: {}\n'.format(
+        print('Test: Average Loss: {:0.4f}, Accuracy: {}/{} ({:.2f}%), Accuracy Diff: {}\n'.format(
             test_loss,
             correct,
             len(test_loader.dataset),
@@ -145,8 +158,8 @@ class Model_Composite(nn.Module):
         with torch.no_grad():
             data, target = next(iter(test_loader))
             data, target = data.to(device), target.to(device)
-            output = self(data)
-            pred = output.argmax(dim=1)
+            y_pred = self(data)
+            pred = y_pred.argmax(dim=1)
             compare = pred.eq(target)
             incorrect_indx = torch.where((compare == False), 1, 0).nonzero()
             top_n_pred = incorrect_indx[:top_n].squeeze()
